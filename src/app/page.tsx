@@ -29,7 +29,22 @@ export default function HomePage() {
         .eq('date', today)
         .maybeSingle()
 
-      setRecord(data)
+      // Create default record if none exists
+      if (!data) {
+        const defaultRecord = {
+          user_id: user.id,
+          date: today,
+          tahajud: false,
+          duha: false,
+          istigfar: 0,
+          sholawat: 0,
+          odoc: false,
+          odoc_title: null,
+        }
+        setRecord(defaultRecord as DailyRecord)
+      } else {
+        setRecord(data)
+      }
     }
 
     fetchRecord()
@@ -64,7 +79,7 @@ export default function HomePage() {
     if (!record) return
 
     const updates: Partial<DailyRecord> = {}
-    
+
     switch (id) {
       case 'tahajud':
         updates.tahajud = !record.tahajud
@@ -77,16 +92,30 @@ export default function HomePage() {
         break
     }
 
+    // Update local state immediately
+    setRecord({ ...record, ...updates })
+
+    // Save to database
     saveRecord(updates)
   }, [record, saveRecord])
 
   const handleDzikirChange = useCallback((type: 'istigfar' | 'sholawat', value: number) => {
+    if (!record) return
+
+    // Update local state immediately
+    setRecord({ ...record, [type]: value })
+
+    // Save to database
     saveRecord({ [type]: value })
-  }, [saveRecord])
+  }, [record, saveRecord])
 
   const handleSubuhSuccess = useCallback(() => {
-    saveRecord({ tahajud: true }) // Using tahajud field temporarily for subuh
-  }, [saveRecord])
+    if (!record) return
+    // Update local state immediately
+    setRecord({ ...record, tahajud: true })
+    // Save to database
+    saveRecord({ tahajud: true })
+  }, [record, saveRecord])
 
   if (loading) {
     return (
@@ -109,13 +138,13 @@ export default function HomePage() {
     { id: 'odoc', label: 'ODOC (One Day One Concept)', checked: record?.odoc || false, icon: '📚' },
   ]
 
-  const completedCount = [
-    record?.tahajud,
-    record?.duha,
-    record?.odoc,
-    (record?.istigfar || 0) >= 100,
-    (record?.sholawat || 0) >= 100,
-  ].filter(Boolean).length
+  const completedCount = record ? [
+    record.tahajud,
+    record.duha,
+    record.odoc,
+    record.istigfar >= 100,
+    record.sholawat >= 100,
+  ].filter(Boolean).length : 0
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-green-50 to-blue-50">
