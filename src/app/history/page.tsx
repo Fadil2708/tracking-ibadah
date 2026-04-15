@@ -4,6 +4,7 @@ import { useAuth } from '@/components/AuthProvider'
 import { createClient } from '@/lib/supabase'
 import { DailyRecord, SubuhVerification } from '@/lib/types'
 import { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
 
 export default function HistoryPage() {
   const { user, loading: authLoading } = useAuth()
@@ -12,6 +13,7 @@ export default function HistoryPage() {
   const [loading, setLoading] = useState(true)
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth())
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear())
+  const router = useRouter()
   const supabase = createClient()
 
   useEffect(() => {
@@ -125,6 +127,36 @@ export default function HistoryPage() {
   const firstDayOfMonth = new Date(selectedYear, selectedMonth, 1).getDay()
   const streak = calculateStreak()
 
+  const handleExportCSV = () => {
+    const headers = ['Tanggal', 'Tahajud', 'Duha', 'Subuh', 'Istigfar', 'Sholawat', 'ODOC', 'Status Subuh']
+    const rows = records.map(r => {
+      const verification = verifications.find(v => v.date === r.date)
+      return [
+        r.date,
+        r.tahajud ? '✓' : '✗',
+        r.duha ? '✓' : '✗',
+        verification && verification.verification_status !== 'failed' ? '✓' : '✗',
+        r.istigfar.toString(),
+        r.sholawat.toString(),
+        r.odoc ? '✓' : '✗',
+        verification?.verification_status || 'Belum upload',
+      ]
+    })
+
+    const csvContent = [
+      headers.join(','),
+      ...rows.map(row => row.join(',')),
+    ].join('\n')
+
+    const blob = new Blob([csvContent], { type: 'text/csv' })
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `riayah-ibadah-${monthNames[selectedMonth]}-${selectedYear}.csv`
+    a.click()
+    window.URL.revokeObjectURL(url)
+  }
+
   const monthNames = [
     'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
     'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
@@ -134,8 +166,14 @@ export default function HistoryPage() {
     <main className="min-h-screen bg-gradient-to-br from-green-50 to-blue-50">
       {/* Header */}
       <header className="bg-white shadow-sm">
-        <div className="max-w-4xl mx-auto px-4 py-4">
+        <div className="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
           <h1 className="text-2xl font-bold text-gray-800">📅 Riwayat Ibadah</h1>
+          <button
+            onClick={() => router.push('/')}
+            className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition text-sm"
+          >
+            ← Dashboard
+          </button>
         </div>
       </header>
 
@@ -150,6 +188,20 @@ export default function HistoryPage() {
         {/* Month Selector */}
         <div className="bg-white rounded-xl p-6 shadow-sm">
           <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-bold text-gray-800">
+              {monthNames[selectedMonth]} {selectedYear}
+            </h2>
+            <div className="flex gap-2">
+              <button
+                onClick={handleExportCSV}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition text-sm"
+              >
+                📥 Export CSV
+              </button>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between mb-4">
             <button
               onClick={() => {
                 if (selectedMonth === 0) {
@@ -161,11 +213,8 @@ export default function HistoryPage() {
               }}
               className="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition"
             >
-              ←
+              ← Sebelumnya
             </button>
-            <h2 className="text-xl font-bold text-gray-800">
-              {monthNames[selectedMonth]} {selectedYear}
-            </h2>
             <button
               onClick={() => {
                 if (selectedMonth === 11) {
@@ -177,7 +226,7 @@ export default function HistoryPage() {
               }}
               className="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition"
             >
-              →
+              Selanjutnya →
             </button>
           </div>
 
@@ -255,6 +304,24 @@ export default function HistoryPage() {
               )
             })}
           </div>
+        </div>
+
+        {/* Navigation Buttons */}
+        <div className="flex gap-3">
+          <button
+            onClick={() => router.push('/')}
+            className="flex-1 py-3 bg-green-600 text-white rounded-xl shadow-sm hover:bg-green-700 transition font-medium"
+          >
+            🏠 Dashboard
+          </button>
+          {user?.role !== 'santri' && (
+            <button
+              onClick={() => router.push('/musyrif')}
+              className="flex-1 py-3 bg-white rounded-xl shadow-sm hover:shadow-md transition text-gray-700 font-medium"
+            >
+              📊 Dashboard Musyrif
+            </button>
+          )}
         </div>
       </div>
     </main>

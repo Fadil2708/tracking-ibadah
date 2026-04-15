@@ -4,19 +4,30 @@ import { useAuth } from '@/components/AuthProvider'
 import { createClient } from '@/lib/supabase'
 import { DailyRecord } from '@/lib/types'
 import { useEffect, useState, useCallback } from 'react'
-import DailyChecklist from '@/components/DailyChecklist'
 import DzikirCounter from '@/components/DzikirCounter'
 import SubuhUploader from '@/components/SubuhUploader'
 import { useRouter } from 'next/navigation'
+import { badgeService } from '@/lib/badgeService'
 
 export default function HomePage() {
   const { user, loading, signOut } = useAuth()
   const [record, setRecord] = useState<DailyRecord | null>(null)
   const [saving, setSaving] = useState(false)
+  const [hasChanges, setHasChanges] = useState(false)
+  const [selectedIbadah, setSelectedIbadah] = useState('')
+  const [newBadges, setNewBadges] = useState<Array<{name: string; icon: string}>>([])
+  const [badgeCount, setBadgeCount] = useState(0)
   const router = useRouter()
   const supabase = createClient()
 
   const today = new Date().toISOString().split('T')[0]
+
+  // Redirect to login if not authenticated
+  useEffect(() => {
+    if (!loading && !user) {
+      router.push('/login')
+    }
+  }, [loading, user, router])
 
   useEffect(() => {
     const fetchRecord = async () => {
@@ -29,7 +40,6 @@ export default function HomePage() {
         .eq('date', today)
         .maybeSingle()
 
-      // Create default record if none exists
       if (!data) {
         const defaultRecord = {
           user_id: user.id,
@@ -50,74 +60,103 @@ export default function HomePage() {
     fetchRecord()
   }, [user, today, supabase])
 
-  const saveRecord = useCallback(async (updates: Partial<DailyRecord>) => {
-    if (!user) return
+  // Warning when leaving with unsaved changes
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (hasChanges) {
+        e.preventDefault()
+        e.returnValue = ''
+      }
+    }
+
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [hasChanges])
+
+  // Fetch badge count
+  useEffect(() => {
+    const fetchBadgeCount = async () => {
+      if (!user) return;
+      
+      const stats = await badgeService.getBadgeStats(user.id);
+      setBadgeCount(stats.totalEarned);
+    };
+
+    fetchBadgeCount();
+  }, [user]);
+
+  const saveRecord = useCallback(async () => {
+    if (!user || !record) return
 
     setSaving(true)
     try {
-      const { data, error } = await supabase
+      // Get badges before save
+      const badgesBefore = await badgeService.getEarnedBadges(user.id);
+      
+      const { data } = await supabase
         .from('daily_records')
         .upsert({
           user_id: user.id,
           date: today,
-          ...updates,
+          tahajud: record.tahajud,
+          duha: record.duha,
+          istigfar: record.istigfar,
+          sholawat: record.sholawat,
+          odoc: record.odoc,
+          odoc_title: record.odoc_title,
         })
         .select()
         .single()
 
       if (data) {
         setRecord(data)
+        setHasChanges(false)
+        
+        // Check for new badges after save
+        setTimeout(async () => {
+          const badgesAfter = await badgeService.getEarnedBadges(user.id);
+          const newBadgesFound = badgesAfter.filter(
+            (b) => !badgesBefore.find((bb) => b.badge.id === bb.badge.id)
+          );
+          
+          if (newBadgesFound.length > 0) {
+            setNewBadges(newBadgesFound.map((b) => ({
+              name: b.badge.name,
+              icon: b.badge.icon,
+            })));
+            setBadgeCount(badgesAfter.length);
+            
+            // Clear notification after 5 seconds
+            setTimeout(() => setNewBadges([]), 5000);
+          }
+        }, 500); // Small delay to let DB trigger run
       }
     } catch (err) {
       console.error('Error saving record:', err)
     } finally {
       setSaving(false)
     }
-  }, [user, today, supabase])
+  }, [user, today, record, supabase])
 
-  const handleToggle = useCallback((id: string) => {
-    if (!record) return
+  const completedCount = record ? [
+    record.tahajud,
+    record.duha,
+    record.odoc,
+    record.istigfar >= 100,
+    record.sholawat >= 100,
+  ].filter(Boolean).length : 0
 
-    const updates: Partial<DailyRecord> = {}
+  const ibadahOptions = [
+    { value: '', label: '-- Pilih Ibadah --' },
+    { value: 'subuh', label: '📸 Sholat Subuh' },
+    { value: 'tahajud', label: '🌙 Sholat Tahajud' },
+    { value: 'duha', label: '☀️ Sholat Duha' },
+    { value: 'istigfar', label: '📿 Istigfar' },
+    { value: 'sholawat', label: '💚 Sholawat' },
+    { value: 'odoc', label: '📚 ODOC' },
+  ]
 
-    switch (id) {
-      case 'tahajud':
-        updates.tahajud = !record.tahajud
-        break
-      case 'duha':
-        updates.duha = !record.duha
-        break
-      case 'odoc':
-        updates.odoc = !record.odoc
-        break
-    }
-
-    // Update local state immediately
-    setRecord({ ...record, ...updates })
-
-    // Save to database
-    saveRecord(updates)
-  }, [record, saveRecord])
-
-  const handleDzikirChange = useCallback((type: 'istigfar' | 'sholawat', value: number) => {
-    if (!record) return
-
-    // Update local state immediately
-    setRecord({ ...record, [type]: value })
-
-    // Save to database
-    saveRecord({ [type]: value })
-  }, [record, saveRecord])
-
-  const handleSubuhSuccess = useCallback(() => {
-    if (!record) return
-    // Update local state immediately
-    setRecord({ ...record, tahajud: true })
-    // Save to database
-    saveRecord({ tahajud: true })
-  }, [record, saveRecord])
-
-  if (loading) {
+  if (loading || !user || !record) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-center">
@@ -128,24 +167,6 @@ export default function HomePage() {
     )
   }
 
-  if (!user) {
-    return null
-  }
-
-  const checklistItems = [
-    { id: 'tahajud', label: 'Sholat Tahajud', checked: record?.tahajud || false, icon: '🌙' },
-    { id: 'duha', label: 'Sholat Duha', checked: record?.duha || false, icon: '☀️' },
-    { id: 'odoc', label: 'ODOC (One Day One Concept)', checked: record?.odoc || false, icon: '📚' },
-  ]
-
-  const completedCount = record ? [
-    record.tahajud,
-    record.duha,
-    record.odoc,
-    record.istigfar >= 100,
-    record.sholawat >= 100,
-  ].filter(Boolean).length : 0
-
   return (
     <main className="min-h-screen bg-gradient-to-br from-green-50 to-blue-50">
       {/* Header */}
@@ -154,18 +175,30 @@ export default function HomePage() {
           <div>
             <h1 className="text-2xl font-bold text-gray-800">Ibadah Tracker</h1>
             <p className="text-sm text-gray-600">
-              {new Date().toLocaleDateString('id-ID', { 
-                weekday: 'long', 
-                year: 'numeric', 
-                month: 'long', 
-                day: 'numeric' 
+              {new Date().toLocaleDateString('id-ID', {
+                weekday: 'long',
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric'
               })}
             </p>
           </div>
           <div className="flex items-center gap-3">
+            {/* Badge Counter */}
+            <button
+              onClick={() => router.push('/achievements')}
+              className="relative px-3 py-1 bg-yellow-100 hover:bg-yellow-200 rounded-lg transition flex items-center gap-2"
+            >
+              <span className="text-lg">🏆</span>
+              <span className="font-semibold text-yellow-700 text-sm">{badgeCount}</span>
+              {badgeCount === 0 && (
+                <span className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full animate-pulse" />
+              )}
+            </button>
+            
             <div className="text-right">
               <p className="text-sm text-gray-600">Assalamu'alaikum,</p>
-              <p className="font-semibold text-gray-800">{user.full_name}</p>
+              <p className="font-semibold text-gray-800">{user?.full_name || 'Santri'}</p>
             </div>
             <button
               onClick={signOut}
@@ -193,33 +226,151 @@ export default function HomePage() {
           </div>
         </div>
 
-        {/* Sholat Subuh Section */}
-        <SubuhUploader 
-          userId={user.id} 
-          date={today}
-          onSuccess={handleSubuhSuccess}
-        />
-
-        {/* Daily Checklist */}
+        {/* Ibadah Selector */}
         <div className="bg-white rounded-xl p-6 shadow-sm">
-          <h2 className="text-lg font-semibold text-gray-800 mb-4">Ibadah Lainnya</h2>
-          <DailyChecklist items={checklistItems} onToggle={handleToggle} />
+          <h2 className="text-lg font-semibold text-gray-800 mb-4">Input Ibadah</h2>
+          
+          <select
+            value={selectedIbadah}
+            onChange={(e) => setSelectedIbadah(e.target.value)}
+            className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent text-lg"
+          >
+            {ibadahOptions.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+
+          {/* Subuh */}
+          {selectedIbadah === 'subuh' && (
+            <div className="mt-4">
+              <SubuhUploader
+                userId={user.id}
+                date={today}
+                onSuccess={() => {
+                  setRecord({ ...record, tahajud: true })
+                  setHasChanges(true)
+                }}
+              />
+            </div>
+          )}
+
+          {/* Tahajud */}
+          {selectedIbadah === 'tahajud' && (
+            <div className="mt-4">
+              <button
+                onClick={() => {
+                  setRecord({ ...record, tahajud: !record.tahajud })
+                  setHasChanges(true)
+                }}
+                className={`w-full py-4 rounded-xl text-xl font-bold transition
+                  ${record.tahajud 
+                    ? 'bg-green-500 text-white' 
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+              >
+                {record.tahajud ? '✓ Sudah Tahajud' : '☐ Tap untuk Tahajud'}
+              </button>
+            </div>
+          )}
+
+          {/* Duha */}
+          {selectedIbadah === 'duha' && (
+            <div className="mt-4">
+              <button
+                onClick={() => {
+                  setRecord({ ...record, duha: !record.duha })
+                  setHasChanges(true)
+                }}
+                className={`w-full py-4 rounded-xl text-xl font-bold transition
+                  ${record.duha 
+                    ? 'bg-green-500 text-white' 
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+              >
+                {record.duha ? '✓ Sudah Duha' : '☐ Tap untuk Duha'}
+              </button>
+            </div>
+          )}
+
+          {/* Istigfar */}
+          {selectedIbadah === 'istigfar' && (
+            <div className="mt-4">
+              <DzikirCounter
+                label="Istigfar"
+                value={record.istigfar || 0}
+                onChange={(value) => {
+                  setRecord({ ...record, istigfar: value })
+                  setHasChanges(true)
+                }}
+                color="green"
+              />
+            </div>
+          )}
+
+          {/* Sholawat */}
+          {selectedIbadah === 'sholawat' && (
+            <div className="mt-4">
+              <DzikirCounter
+                label="Sholawat"
+                value={record.sholawat || 0}
+                onChange={(value) => {
+                  setRecord({ ...record, sholawat: value })
+                  setHasChanges(true)
+                }}
+                color="blue"
+              />
+            </div>
+          )}
+
+          {/* ODOC */}
+          {selectedIbadah === 'odoc' && (
+            <div className="mt-4 space-y-3">
+              <button
+                onClick={() => {
+                  setRecord({ ...record, odoc: !record.odoc })
+                  setHasChanges(true)
+                }}
+                className={`w-full py-4 rounded-xl text-xl font-bold transition
+                  ${record.odoc 
+                    ? 'bg-green-500 text-white' 
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+              >
+                {record.odoc ? '✓ Sudah ODOC' : '☐ Tap untuk ODOC'}
+              </button>
+              {record.odoc && (
+                <input
+                  type="text"
+                  placeholder="Judul konsep yang dipelajari (opsional)"
+                  value={record.odoc_title || ''}
+                  onChange={(e) => {
+                    setRecord({ ...record, odoc_title: e.target.value })
+                    setHasChanges(true)
+                  }}
+                  className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                />
+              )}
+            </div>
+          )}
         </div>
 
-        {/* Dzikir Counters */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <DzikirCounter
-            label="Istigfar"
-            value={record?.istigfar || 0}
-            onChange={(value) => handleDzikirChange('istigfar', value)}
-            color="green"
-          />
-          <DzikirCounter
-            label="Sholawat"
-            value={record?.sholawat || 0}
-            onChange={(value) => handleDzikirChange('sholawat', value)}
-            color="blue"
-          />
+        {/* Save Button */}
+        <div className="sticky bottom-4 bg-white rounded-xl p-4 shadow-lg">
+          {hasChanges && (
+            <div className="text-sm text-yellow-600 mb-2">⚠️ Ada perubahan yang belum disimpan</div>
+          )}
+          <button
+            onClick={saveRecord}
+            disabled={saving || !hasChanges}
+            className={`w-full py-3 rounded-lg font-semibold transition
+              ${saving ? 'bg-gray-300 text-gray-500 cursor-not-allowed' :
+                hasChanges ? 'bg-green-600 text-white hover:bg-green-700' :
+                'bg-green-400 text-white'}`}
+          >
+            {saving ? '⏳ Menyimpan...' : hasChanges ? '💾 Simpan Data' : '✓ Tersimpan'}
+          </button>
         </div>
 
         {/* Navigation */}
@@ -230,7 +381,7 @@ export default function HomePage() {
           >
             📅 Riwayat
           </button>
-          {user.role !== 'santri' && (
+          {user?.role !== 'santri' && (
             <button
               onClick={() => router.push('/musyrif')}
               className="flex-1 py-3 bg-white rounded-xl shadow-sm hover:shadow-md transition text-gray-700 font-medium"
@@ -240,6 +391,45 @@ export default function HomePage() {
           )}
         </div>
       </div>
+
+      {/* Badge Earned Notification */}
+      {newBadges.length > 0 && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 animate-fade-in">
+          <div className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl animate-bounce-in">
+            <div className="text-center">
+              <div className="text-6xl mb-4">🎉</div>
+              <h2 className="text-2xl font-bold text-gray-800 mb-2">
+                Selamat!
+              </h2>
+              <p className="text-gray-600 mb-6">
+                Kamu mendapatkan badge baru:
+              </p>
+              
+              <div className="space-y-3 mb-6">
+                {newBadges.map((badge, index) => (
+                  <div
+                    key={index}
+                    className="bg-gradient-to-r from-yellow-100 to-yellow-200 rounded-xl p-4 flex items-center gap-3 border-2 border-yellow-400"
+                  >
+                    <span className="text-4xl">{badge.icon}</span>
+                    <div className="text-left">
+                      <p className="font-bold text-gray-800">{badge.name}</p>
+                      <p className="text-sm text-gray-600">Badge baru terbuka!</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <button
+                onClick={() => setNewBadges([])}
+                className="w-full py-3 bg-teal-600 text-white font-semibold rounded-xl hover:bg-teal-700 transition-colors"
+              >
+                Lihat Semua Badge
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   )
 }
