@@ -162,14 +162,23 @@ export default function SubuhUploader({ userId, date, onSuccess }: SubuhUploader
         return
       }
 
-      // Update daily record
-      await supabase
+      // Update daily record - ensure record exists
+      const { error: recordError } = await supabase
         .from('daily_records')
         .upsert({
           user_id: userId,
           date,
-          tahajud: true, // Mark subuh as done
+          tahajud: false,
+          duha: false,
+          istigfar: 0,
+          sholawat: 0,
+          odoc: false,
+          odoc_title: null,
         })
+
+      if (recordError) {
+        console.error('Error updating daily record:', recordError)
+      }
 
       onSuccess?.()
     } catch (err) {

@@ -9,7 +9,9 @@
       "Bash(npm uninstall *)",
       "Bash(taskkill *)",
       "Bash(rmdir *)",
-      "Bash(findstr *)"
+      "Bash(findstr *)",
+      "Bash(type *)",
+      "Bash(move *)"
     ]
   },
   "$version": 3

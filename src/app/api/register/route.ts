@@ -54,6 +54,26 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // Create profile record in database
+    const { error: profileError } = await supabaseAdmin
+      .from('profiles')
+      .insert({
+        id: authData.user!.id,
+        username,
+        full_name: fullName,
+        role: 'santri',
+        community_code: communityCode,
+      })
+
+    if (profileError) {
+      // Rollback: delete auth user if profile creation fails
+      await supabaseAdmin.auth.admin.deleteUser(authData.user!.id)
+      return NextResponse.json(
+        { error: 'Gagal membuat profil pengguna' },
+        { status: 500 }
+      )
+    }
+
     return NextResponse.json({
       success: true,
       message: 'Registrasi berhasil',

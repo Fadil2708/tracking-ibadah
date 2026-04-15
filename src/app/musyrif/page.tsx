@@ -3,7 +3,7 @@
 import { useAuth } from '@/components/AuthProvider'
 import { createClient } from '@/lib/supabase'
 import { Profile, DailyRecord, SubuhVerification } from '@/lib/types'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo, useCallback } from 'react'
 
 interface SantriData {
   profile: Profile
@@ -17,7 +17,9 @@ export default function MusyrifPage() {
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<'all' | 'complete' | 'incomplete' | 'no-report'>('all')
   const [selectedSantri, setSelectedSantri] = useState<SantriData | null>(null)
-  const supabase = createClient()
+  
+  // Memoize supabase client
+  const supabase = useMemo(() => createClient(), [])
 
   const today = new Date().toISOString().split('T')[0]
 
@@ -25,39 +27,50 @@ export default function MusyrifPage() {
     const fetchSantriData = async () => {
       if (!user || (user.role !== 'musyrif' && user.role !== 'admin')) return
 
-      // Get all profiles from same community
-      const { data: profiles } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('community_code', user.community_code)
-        .eq('role', 'santri')
-        .order('full_name')
+      try {
+        // Run all queries in parallel
+        const [profilesResult, recordsResult, verificationsResult] = await Promise.all([
+          supabase
+            .from('profiles')
+            .select('*')
+            .eq('community_code', user.community_code)
+            .eq('role', 'santri')
+            .order('full_name'),
+          
+          supabase
+            .from('daily_records')
+            .select('*')
+            .eq('date', today),
+          
+          supabase
+            .from('subuh_verifications')
+            .select('*')
+            .eq('date', today),
+        ])
 
-      if (!profiles) {
+        if (!profilesResult.data) {
+          setSantriList([])
+          setLoading(false)
+          return
+        }
+
+        // Create maps for faster lookup
+        const recordsMap = new Map((recordsResult.data || []).map(r => [r.user_id, r]))
+        const verificationsMap = new Map((verificationsResult.data || []).map(v => [v.user_id, v]))
+
+        // Map profiles with their data
+        const santriData: SantriData[] = profilesResult.data.map(profile => ({
+          profile,
+          record: recordsMap.get(profile.id) || null,
+          verification: verificationsMap.get(profile.id) || null,
+        }))
+
+        setSantriList(santriData)
+      } catch (error) {
+        console.error('Error fetching santri data:', error)
+      } finally {
         setLoading(false)
-        return
       }
-
-      // Get today's records
-      const { data: records } = await supabase
-        .from('daily_records')
-        .select('*')
-        .eq('date', today)
-
-      // Get today's verifications
-      const { data: verifications } = await supabase
-        .from('subuh_verifications')
-        .select('*')
-        .eq('date', today)
-
-      const santriData: SantriData[] = profiles.map(profile => ({
-        profile,
-        record: records?.find(r => r.user_id === profile.id) || null,
-        verification: verifications?.find(v => v.user_id === profile.id) || null,
-      }))
-
-      setSantriList(santriData)
-      setLoading(false)
     }
 
     fetchSantriData()

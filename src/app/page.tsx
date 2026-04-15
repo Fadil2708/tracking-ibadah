@@ -3,11 +3,15 @@
 import { useAuth } from '@/components/AuthProvider'
 import { createClient } from '@/lib/supabase'
 import { DailyRecord } from '@/lib/types'
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo, lazy, Suspense } from 'react'
 import DzikirCounter from '@/components/DzikirCounter'
-import SubuhUploader from '@/components/SubuhUploader'
 import { useRouter } from 'next/navigation'
 import { badgeService } from '@/lib/badgeService'
+import { notificationScheduler } from '@/lib/notificationScheduler'
+import { calculatePrayerTimes } from '@/lib/prayerTime'
+
+// Lazy load heavy component
+const SubuhUploader = lazy(() => import('@/components/SubuhUploader'))
 
 export default function HomePage() {
   const { user, loading, signOut } = useAuth()
@@ -17,8 +21,11 @@ export default function HomePage() {
   const [selectedIbadah, setSelectedIbadah] = useState('')
   const [newBadges, setNewBadges] = useState<Array<{name: string; icon: string}>>([])
   const [badgeCount, setBadgeCount] = useState(0)
+  const [fetchingRecord, setFetchingRecord] = useState(true)
   const router = useRouter()
-  const supabase = createClient()
+  
+  // Memoize supabase client to prevent recreation
+  const supabase = useMemo(() => createClient(), [])
 
   const today = new Date().toISOString().split('T')[0]
 
@@ -33,27 +40,34 @@ export default function HomePage() {
     const fetchRecord = async () => {
       if (!user) return
 
-      const { data } = await supabase
-        .from('daily_records')
-        .select('*')
-        .eq('user_id', user.id)
-        .eq('date', today)
-        .maybeSingle()
+      setFetchingRecord(true)
+      try {
+        const { data } = await supabase
+          .from('daily_records')
+          .select('*')
+          .eq('user_id', user.id)
+          .eq('date', today)
+          .maybeSingle()
 
-      if (!data) {
-        const defaultRecord = {
-          user_id: user.id,
-          date: today,
-          tahajud: false,
-          duha: false,
-          istigfar: 0,
-          sholawat: 0,
-          odoc: false,
-          odoc_title: null,
+        if (!data) {
+          const defaultRecord = {
+            user_id: user.id,
+            date: today,
+            tahajud: false,
+            duha: false,
+            istigfar: 0,
+            sholawat: 0,
+            odoc: false,
+            odoc_title: null,
+          }
+          setRecord(defaultRecord as DailyRecord)
+        } else {
+          setRecord(data)
         }
-        setRecord(defaultRecord as DailyRecord)
-      } else {
-        setRecord(data)
+      } catch (error) {
+        console.error('Error fetching record:', error)
+      } finally {
+        setFetchingRecord(false)
       }
     }
 
@@ -73,16 +87,50 @@ export default function HomePage() {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload)
   }, [hasChanges])
 
-  // Fetch badge count
+  // Fetch badge count - debounced to not block initial render
   useEffect(() => {
-    const fetchBadgeCount = async () => {
-      if (!user) return;
-      
-      const stats = await badgeService.getBadgeStats(user.id);
-      setBadgeCount(stats.totalEarned);
-    };
+    if (!user) return;
 
-    fetchBadgeCount();
+    // Delay badge fetch to not block initial page load
+    const timer = setTimeout(async () => {
+      try {
+        const stats = await badgeService.getBadgeStats(user.id);
+        setBadgeCount(stats.totalEarned);
+      } catch (error) {
+        console.error('Error fetching badge count:', error);
+      }
+    }, 1000); // Wait 1 second after page load
+
+    return () => clearTimeout(timer);
+  }, [user]);
+
+  // Schedule prayer time notifications
+  useEffect(() => {
+    if (!user) return;
+    if (!notificationScheduler.isSupported()) return;
+    if (Notification.permission !== 'granted') return;
+
+    // Get user location and schedule notifications
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const { latitude, longitude } = position.coords;
+          const prayerTimes = calculatePrayerTimes(latitude, longitude, new Date());
+          
+          if (prayerTimes) {
+            notificationScheduler.scheduleAll(prayerTimes);
+          }
+        },
+        (error) => {
+          console.warn('Location access denied for prayer times:', error);
+        }
+      );
+    }
+
+    // Cleanup on unmount
+    return () => {
+      // Don't clear here, let settings page manage it
+    };
   }, [user]);
 
   const saveRecord = useCallback(async () => {
@@ -118,14 +166,19 @@ export default function HomePage() {
           const newBadgesFound = badgesAfter.filter(
             (b) => !badgesBefore.find((bb) => b.badge.id === bb.badge.id)
           );
-          
+
           if (newBadgesFound.length > 0) {
             setNewBadges(newBadgesFound.map((b) => ({
               name: b.badge.name,
               icon: b.badge.icon,
             })));
             setBadgeCount(badgesAfter.length);
-            
+
+            // Send notification for new badges
+            newBadgesFound.forEach((badge) => {
+              notificationScheduler.notifyAchievement(badge.badge.name, badge.badge.icon);
+            });
+
             // Clear notification after 5 seconds
             setTimeout(() => setNewBadges([]), 5000);
           }
@@ -245,14 +298,21 @@ export default function HomePage() {
           {/* Subuh */}
           {selectedIbadah === 'subuh' && (
             <div className="mt-4">
-              <SubuhUploader
-                userId={user.id}
-                date={today}
-                onSuccess={() => {
-                  setRecord({ ...record, tahajud: true })
-                  setHasChanges(true)
-                }}
-              />
+              <Suspense fallback={
+                <div className="text-center py-8">
+                  <div className="animate-spin text-2xl mx-auto">⏳</div>
+                  <p className="text-gray-600 mt-2">Memuat uploader...</p>
+                </div>
+              }>
+                <SubuhUploader
+                  userId={user.id}
+                  date={today}
+                  onSuccess={() => {
+                    // Refresh the page to get updated data
+                    window.location.reload()
+                  }}
+                />
+              </Suspense>
             </div>
           )}
 

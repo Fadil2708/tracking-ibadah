@@ -33,7 +33,7 @@ export default function LoginPage() {
         return
       }
 
-      router.push('/')
+      router.replace('/')
       router.refresh()
     } catch (err) {
       setError('Terjadi kesalahan')
@@ -53,7 +53,7 @@ export default function LoginPage() {
         <form onSubmit={handleLogin} className="space-y-4">
           <div>
             <label htmlFor="username" className="block text-sm font-medium text-gray-700 mb-1">
-              Username atau Email
+              Username
             </label>
             <input
               id="username"
